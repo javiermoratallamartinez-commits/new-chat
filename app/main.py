@@ -1,0 +1,318 @@
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+import re
+import uuid
+
+from datetime import datetime
+
+from app.context_store import get_context
+from app.state import ChatState
+
+app = FastAPI(title="JotaAI Core")
+
+# ---------- utils ----------
+PHONE_RE = re.compile(r"^[69]\d{8}$")
+
+def is_valid_phone(text: str) -> bool:
+    return bool(PHONE_RE.fullmatch(text.strip()))
+
+# ---------- input ----------
+class ChatIn(BaseModel):
+    message: str
+    sessionId: str | None = None
+
+# ---------- endpoint ----------
+@app.post("/chat")
+def chat(m: ChatIn):
+    sid = m.sessionId or str(uuid.uuid4())
+    ctx = get_context(sid)
+    text = m.message.strip()
+
+    # =========================
+    # START
+    # =========================
+    if ctx.state == ChatState.START:
+        ctx.state = ChatState.ASK_NAME
+        return JSONResponse({
+            "reply": "Hola 😊 ¿Cómo te llamas?",
+            "sessionId": sid
+        })
+
+    # =========================
+    # ASK_NAME
+    # =========================
+    if ctx.state == ChatState.ASK_NAME:
+        if len(text) < 2:
+            return JSONResponse({
+                "reply": "Necesito tu nombre para continuar 😊",
+                "sessionId": sid
+            })
+
+        ctx.name = text
+        ctx.state = ChatState.ASK_PHONE
+
+        return JSONResponse({
+            "reply": f"Encantado, {ctx.name}. ¿Me indicas tu teléfono?",
+            "sessionId": sid
+        })
+
+    # =========================
+    # ASK_PHONE
+    # =========================
+    if ctx.state == ChatState.ASK_PHONE:
+        if not is_valid_phone(text):
+            return JSONResponse({
+                "reply": "El teléfono debe tener 9 dígitos y empezar por 6 o 9 📞",
+                "sessionId": sid
+            })
+
+        ctx.phone = text
+        ctx.state = ChatState.ASK_REASON
+
+        return JSONResponse({
+            "reply": "Perfecto 👍 ¿Cuál es el motivo de la consulta?",
+            "sessionId": sid
+        })
+
+    # =========================
+    # ASK_REASON
+    # =========================
+    if ctx.state == ChatState.ASK_REASON:
+        if len(text) < 3:
+            return JSONResponse({
+                "reply": "¿Podrías indicarme brevemente el motivo de la consulta?",
+                "sessionId": sid
+            })
+
+        ctx.reason = text
+        ctx.state = ChatState.ASK_DATE
+
+        return JSONResponse({
+            "reply": "Perfecto 😊 ¿Para qué día te gustaría la cita?",
+            "sessionId": sid
+        })
+
+
+    # =========================
+    # ASK_DATE
+    # =========================
+    if ctx.state == ChatState.ASK_DATE:
+        try:
+            # Aceptamos formato DD/MM/YYYY
+            date = datetime.strptime(text, "%d/%m/%Y").date()
+        except ValueError:
+            return JSONResponse({
+                "reply": "Por favor, indícame la fecha en formato **DD/MM/AAAA** (por ejemplo: 26/03/2026).",
+                "sessionId": sid
+            })
+
+        ctx.date = date
+        ctx.state = ChatState.ASK_HALF_DAY
+
+        return JSONResponse({
+            "reply": "Genial 😊 ¿Prefieres **por la mañana** o **por la tarde**?",
+            "sessionId": sid
+        })
+
+    # =========================
+    # ASK_HALF_DAY
+    # =========================
+    if ctx.state == ChatState.ASK_HALF_DAY:
+        if text.lower() not in ("mañana", "tarde"):
+            return JSONResponse({
+                "reply": "¿Te viene mejor por la mañana o por la tarde?",
+                "options": [
+                    {"label": "🌅 Mañana", "value": "mañana"},
+                    {"label": "🌇 Tarde", "value": "tarde"}
+                ],
+                "sessionId": sid
+            })
+
+        ctx.half_day = text.lower()
+        ctx.state = ChatState.ASK_TIME
+
+        return JSONResponse({
+            "reply": f"Perfecto 👍 ¿A qué hora por la {ctx.half_day} te vendría bien?",
+            "sessionId": sid
+        })
+
+
+
+    # =========================
+    # ASK_TIME
+    # =========================
+    if ctx.state == ChatState.ASK_TIME:
+        # Acepta formatos: 16 | 16:00 | 9 | 9:30
+        match = re.fullmatch(r"([01]?\d|2[0-3])(?:[:.]([0-5]\d))?", text)
+
+        if not match:
+            return JSONResponse({
+                "reply": "Indícame una **hora válida** 😊 (por ejemplo: 10, 10:30, 16:00)",
+                "sessionId": sid
+            })
+
+        hour = int(match.group(1))
+        minute = match.group(2) or "00"
+
+        ctx.time = f"{hour:02d}:{minute}"
+        ctx.state = ChatState.CONFIRMATION
+
+        return JSONResponse({
+            "reply": (
+                f"Perfecto 😊 Resumo tu cita:\n\n"
+                f"👤 Nombre: **{ctx.name}**\n"
+                f"📞 Teléfono: **{ctx.phone}**\n"
+                f"🦷 Motivo: **{ctx.reason}**\n"
+                f"📅 Fecha: **{ctx.date}**\n"
+                f"🕒 Hora: **{ctx.time}**\n\n"
+                f"¿Confirmamos la cita? (sí / no)"
+            ),
+            "sessionId": sid
+        })
+    
+    # =========================
+    # CONFIRMATION
+    # =========================
+    if ctx.state == ChatState.CONFIRMATION:
+        answer = text.lower()
+
+        if answer in ("sí", "si", "s"):
+            ctx.state = ChatState.CONFIRMED
+
+            return JSONResponse({
+                "reply": (
+                    "✅ **Cita confirmada**\n\n"
+                    "Gracias 😊 Hemos registrado tu solicitud y en breve nos pondremos en contacto contigo "
+                    "para confirmar la disponibilidad.\n\n"
+                    "¡Que tengas un buen día!"
+                ),
+                "sessionId": sid
+            })
+
+        if answer in ("no", "n"):
+            ctx.state = ChatState.CHANGE_WHAT
+
+            return JSONResponse({
+                "reply": (
+                    "De acuerdo 👍 ¿Qué te gustaría cambiar?\n\n"
+                    "1️⃣ Fecha\n"
+                    "2️⃣ Hora\n"
+                    "3️⃣ Motivo\n\n"
+                    "Escribe el número de la opción."
+                ),
+                "sessionId": sid
+            })
+
+        return JSONResponse({
+            "reply": "Respóndeme solo con **sí** o **no** 😊",
+            "sessionId": sid
+        })
+
+
+    # =========================
+    # CHANGE_WHAT
+    # =========================
+    if ctx.state == ChatState.CHANGE_WHAT:
+        if text == "1":
+            ctx.state = ChatState.ASK_DATE_EDIT
+            return JSONResponse({
+                "reply": "📅 De acuerdo. ¿Para qué fecha te vendría mejor la cita?",
+                "sessionId": sid
+            })
+
+        if text == "2":
+            ctx.state = ChatState.ASK_TIME_EDIT
+            return JSONResponse({
+                "reply": "⏰ Perfecto. ¿Qué hora prefieres?",
+                "sessionId": sid
+            })
+
+        if text == "3":
+            ctx.state = ChatState.ASK_REASON_EDIT
+            return JSONResponse({
+                "reply": "📝 Entendido. ¿Cuál sería ahora el motivo de la consulta?",
+                "sessionId": sid
+            })
+
+        return JSONResponse({
+            "reply": (
+                "Por favor, elige una opción válida:\n\n"
+                "1️⃣ Fecha\n"
+                "2️⃣ Hora\n"
+                "3️⃣ Motivo"
+            ),
+            "sessionId": sid
+        })
+
+
+    # =========================
+    # ASK_DATE_EDIT
+    # =========================
+    if ctx.state == ChatState.ASK_DATE_EDIT:
+        if len(text) < 3:
+            return JSONResponse({
+                "reply": (
+                    "Indícame una fecha válida 😊\n\n"
+                    "Ejemplos:\n"
+                    "- mañana\n"
+                    "- el viernes\n"
+                    "- 20 de enero"
+                ),
+                "sessionId": sid
+            })
+
+        ctx.date = text
+        ctx.state = ChatState.CONFIRMATION
+
+        return JSONResponse({
+            "reply": (
+                "Perfecto 👍 He actualizado la **fecha**.\n\n"
+                f"📋 **Resumen de tu cita:**\n"
+                f"- Nombre: {ctx.name}\n"
+                f"- Teléfono: {ctx.phone}\n"
+                f"- Motivo: {ctx.reason}\n"
+                f"- Fecha: {ctx.date}\n\n"
+                "¿Confirmamos la cita? (**sí / no**)"
+            ),
+            "sessionId": sid
+        })
+
+    # =========================
+    # ASK_TIME_EDIT
+    # =========================
+    if ctx.state == ChatState.ASK_TIME_EDIT:
+        if not re.match(r"^\d{1,2}(:\d{2})?$", text):
+            return JSONResponse({
+                "reply": "Indícame una hora válida ⏰ (por ejemplo 10 o 10:30)",
+                "sessionId": sid
+            })
+
+        ctx.time = text
+        ctx.state = ChatState.CONFIRMATION
+
+        return JSONResponse({
+            "reply": (
+                "Genial 👍 He actualizado la **hora**.\n\n"
+                f"📋 **Resumen de tu cita:**\n"
+                f"- Nombre: {ctx.name}\n"
+                f"- Teléfono: {ctx.phone}\n"
+                f"- Motivo: {ctx.reason}\n"
+                f"- Fecha: {ctx.date}\n"
+                f"- Hora: {ctx.time}\n\n"
+                "¿Confirmamos la cita? (**sí / no**)"
+            ),
+            "sessionId": sid
+        })
+
+
+
+    # =========================
+    # FALLBACK
+    # =========================
+    return JSONResponse({
+        "reply": "Algo no ha ido bien, vamos a empezar de nuevo 😊",
+        "sessionId": sid
+    })
+  

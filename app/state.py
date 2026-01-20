@@ -6,7 +6,7 @@ class ChatState(str, Enum):
     ASK_NAME = "ASK_NAME"
     ASK_PHONE = "ASK_PHONE"
     ASK_REASON = "ASK_REASON"
-
+    
     ASK_DATE = "ASK_DATE"
     ASK_HALF_DAY = "ASK_HALF_DAY"
     ASK_TIME = "ASK_TIME"

@@ -10,6 +10,9 @@ from datetime import datetime
 from app.context_store import get_context
 from app.state import ChatState
 
+from app.normalize import normalize_date
+
+
 app = FastAPI(title="JotaAI Core")
 
 # ---------- utils ----------
@@ -99,16 +102,23 @@ def chat(m: ChatIn):
     # ASK_DATE
     # =========================
     if ctx.state == ChatState.ASK_DATE:
-        try:
-            # Aceptamos formato DD/MM/YYYY
-            date = datetime.strptime(text, "%d/%m/%Y").date()
-        except ValueError:
+        iso_date = normalize_date(text)
+
+        if not iso_date:
             return JSONResponse({
-                "reply": "Por favor, indícame la fecha en formato **DD/MM/AAAA** (por ejemplo: 26/03/2026).",
+                "reply": (
+                    "Indícame una fecha válida 😊\n\n"
+                    "Ejemplos:\n"
+                    "- mañana\n"
+                    "- el viernes\n"
+                    "- 20/01\n"
+                    "- 20 de enero"
+                ),
                 "sessionId": sid
             })
 
-        ctx.date = date
+        ctx.date_raw = text        # lo que dijo el usuario
+        ctx.date = iso_date        # YYYY-MM-DD
         ctx.state = ChatState.ASK_HALF_DAY
 
         return JSONResponse({
@@ -306,6 +316,32 @@ def chat(m: ChatIn):
             "sessionId": sid
         })
 
+    # =========================
+    # ASK_REASON_EDIT
+    # =========================
+    if ctx.state == ChatState.ASK_REASON_EDIT:
+        if len(text) < 3:
+            return JSONResponse({
+                "reply": "Indícame un motivo válido, por favor 😊",
+                "sessionId": sid
+            })
+
+        ctx.reason = text
+        ctx.state = ChatState.CONFIRMATION
+
+        return JSONResponse({
+            "reply": (
+                "Perfecto 👍 He actualizado el **motivo**.\n\n"
+                f"📋 **Resumen de tu cita:**\n"
+                f"- Nombre: {ctx.name}\n"
+                f"- Teléfono: {ctx.phone}\n"
+                f"- Motivo: {ctx.reason}\n"
+                f"- Fecha: {ctx.date}\n"
+                f"- Hora: {ctx.time}\n\n"
+                "¿Confirmamos la cita? (**sí / no**)"
+            ),
+            "sessionId": sid
+        })
 
 
     # =========================

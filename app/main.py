@@ -130,23 +130,29 @@ def chat(m: ChatIn):
     # ASK_HALF_DAY
     # =========================
     if ctx.state == ChatState.ASK_HALF_DAY:
-        if text.lower() not in ("mañana", "tarde"):
+        choice = text.lower()
+
+        if choice not in ("mañana", "tarde"):
             return JSONResponse({
-                "reply": "¿Te viene mejor por la mañana o por la tarde?",
-                "options": [
-                    {"label": "🌅 Mañana", "value": "mañana"},
-                    {"label": "🌇 Tarde", "value": "tarde"}
-                ],
+                "reply": (
+                    "Por favor, elige una opción válida 👇\n\n"
+                    "🟢 **mañana**\n"
+                    "🟣 **tarde**"
+                ),
                 "sessionId": sid
             })
 
-        ctx.half_day = text.lower()
+        ctx.half_day = choice
         ctx.state = ChatState.ASK_TIME
 
         return JSONResponse({
-            "reply": f"Perfecto 👍 ¿A qué hora por la {ctx.half_day} te vendría bien?",
+            "reply": (
+                f"Perfecto 👍 Por la **{choice}**.\n\n"
+                "⏰ ¿A qué **hora** te vendría bien?"
+            ),
             "sessionId": sid
         })
+
 
 
 
@@ -154,33 +160,52 @@ def chat(m: ChatIn):
     # ASK_TIME
     # =========================
     if ctx.state == ChatState.ASK_TIME:
-        # Acepta formatos: 16 | 16:00 | 9 | 9:30
-        match = re.fullmatch(r"([01]?\d|2[0-3])(?:[:.]([0-5]\d))?", text)
+        # Aceptamos: 10 | 10:30 | 9 | 09:15
+        match = re.fullmatch(r"([01]?\d|2[0-3])(:[0-5]\d)?", text)
 
         if not match:
             return JSONResponse({
-                "reply": "Indícame una **hora válida** 😊 (por ejemplo: 10, 10:30, 16:00)",
+                "reply": (
+                    "Indícame una **hora válida** ⏰\n\n"
+                    "Ejemplos:\n"
+                    "• 10\n"
+                    "• 10:30\n"
+                    "• 17:15"
+                ),
                 "sessionId": sid
             })
 
         hour = int(match.group(1))
-        minute = match.group(2) or "00"
 
-        ctx.time = f"{hour:02d}:{minute}"
+        # Validación suave según franja
+        if ctx.half_day == "mañana" and hour >= 14:
+            return JSONResponse({
+                "reply": "Esa hora parece de **tarde** 😊 Elige una hora de mañana.",
+                "sessionId": sid
+            })
+
+        if ctx.half_day == "tarde" and hour < 14:
+            return JSONResponse({
+                "reply": "Esa hora parece de **mañana** 😊 Elige una hora de tarde.",
+                "sessionId": sid
+            })
+
+        ctx.time = text
         ctx.state = ChatState.CONFIRMATION
 
         return JSONResponse({
             "reply": (
-                f"Perfecto 😊 Resumo tu cita:\n\n"
-                f"👤 Nombre: **{ctx.name}**\n"
-                f"📞 Teléfono: **{ctx.phone}**\n"
-                f"🦷 Motivo: **{ctx.reason}**\n"
-                f"📅 Fecha: **{ctx.date}**\n"
-                f"🕒 Hora: **{ctx.time}**\n\n"
-                f"¿Confirmamos la cita? (sí / no)"
+                "Perfecto 👍 Aquí tienes el resumen de tu cita:\n\n"
+                f"👤 Nombre: {ctx.name}\n"
+                f"📞 Teléfono: {ctx.phone}\n"
+                f"📝 Motivo: {ctx.reason}\n"
+                f"📅 Fecha: {ctx.date}\n"
+                f"🕒 Hora: {ctx.time}\n\n"
+                "¿Confirmamos la cita? (**sí / no**)"
             ),
             "sessionId": sid
         })
+
     
     # =========================
     # CONFIRMATION

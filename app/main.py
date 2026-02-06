@@ -5,15 +5,22 @@ from pydantic import BaseModel
 import re
 import uuid
 
-from datetime import datetime
-
 from app.context_store import get_context
 from app.state import ChatState
 
-from app.normalize import normalize_date
+from app.normalizers.date import normalize_date
+from app.normalizers.time import normalize_time
+
+from app.database import init_db
+
 
 
 app = FastAPI(title="JotaAI Core")
+
+#----------startup----------
+@app.on_event("startup")
+def _startup():
+    init_db()
 
 # ---------- utils ----------
 PHONE_RE = re.compile(r"^[69]\d{8}$")
@@ -25,6 +32,7 @@ def is_valid_phone(text: str) -> bool:
 class ChatIn(BaseModel):
     message: str
     sessionId: str | None = None
+
 
 # ---------- endpoint ----------
 @app.post("/chat")
@@ -117,14 +125,15 @@ def chat(m: ChatIn):
                 "sessionId": sid
             })
 
-        ctx.date_raw = text        # lo que dijo el usuario
-        ctx.date = iso_date        # YYYY-MM-DD
+        ctx.date_text = text     # lo que dijo el usuario
+        ctx.date_iso = iso_date  # YYYY-MM-DD
         ctx.state = ChatState.ASK_HALF_DAY
 
         return JSONResponse({
             "reply": "Genial 😊 ¿Prefieres **por la mañana** o **por la tarde**?",
             "sessionId": sid
         })
+
 
     # =========================
     # ASK_HALF_DAY
@@ -160,10 +169,9 @@ def chat(m: ChatIn):
     # ASK_TIME
     # =========================
     if ctx.state == ChatState.ASK_TIME:
-        # Aceptamos: 10 | 10:30 | 9 | 09:15
-        match = re.fullmatch(r"([01]?\d|2[0-3])(:[0-5]\d)?", text)
+        t24 = normalize_time(text)
 
-        if not match:
+        if not t24:
             return JSONResponse({
                 "reply": (
                     "Indícame una **hora válida** ⏰\n\n"
@@ -175,7 +183,7 @@ def chat(m: ChatIn):
                 "sessionId": sid
             })
 
-        hour = int(match.group(1))
+        hour = int(t24.split(":")[0])
 
         # Validación suave según franja
         if ctx.half_day == "mañana" and hour >= 14:
@@ -190,7 +198,8 @@ def chat(m: ChatIn):
                 "sessionId": sid
             })
 
-        ctx.time = text
+        ctx.time_text = text   # lo que dijo el usuario
+        ctx.time_24h = t24     # HH:MM
         ctx.state = ChatState.CONFIRMATION
 
         return JSONResponse({
@@ -199,21 +208,24 @@ def chat(m: ChatIn):
                 f"👤 Nombre: {ctx.name}\n"
                 f"📞 Teléfono: {ctx.phone}\n"
                 f"📝 Motivo: {ctx.reason}\n"
-                f"📅 Fecha: {ctx.date}\n"
-                f"🕒 Hora: {ctx.time}\n\n"
+                f"📅 Fecha: {ctx.date_text} ({ctx.date_iso})\n"
+                f"🕒 Hora: {ctx.time_text} ({ctx.time_24h})\n\n"
                 "¿Confirmamos la cita? (**sí / no**)"
             ),
             "sessionId": sid
         })
+
 
     
     # =========================
     # CONFIRMATION
     # =========================
     if ctx.state == ChatState.CONFIRMATION:
-        answer = text.lower()
+        answer = text.lower().strip()
 
         if answer in ("sí", "si", "s"):
+            from app.models import save_appointment
+            save_appointment(ctx, sid)   # ✅ guardar SOLO aquí
             ctx.state = ChatState.CONFIRMED
 
             return JSONResponse({
@@ -228,7 +240,6 @@ def chat(m: ChatIn):
 
         if answer in ("no", "n"):
             ctx.state = ChatState.CHANGE_WHAT
-
             return JSONResponse({
                 "reply": (
                     "De acuerdo 👍 ¿Qué te gustaría cambiar?\n\n"
@@ -244,6 +255,8 @@ def chat(m: ChatIn):
             "reply": "Respóndeme solo con **sí** o **no** 😊",
             "sessionId": sid
         })
+        
+
 
 
     # =========================
@@ -286,19 +299,23 @@ def chat(m: ChatIn):
     # ASK_DATE_EDIT
     # =========================
     if ctx.state == ChatState.ASK_DATE_EDIT:
-        if len(text) < 3:
+        iso_date = normalize_date(text)
+
+        if not iso_date:
             return JSONResponse({
                 "reply": (
                     "Indícame una fecha válida 😊\n\n"
                     "Ejemplos:\n"
                     "- mañana\n"
                     "- el viernes\n"
+                    "- 20/01\n"
                     "- 20 de enero"
                 ),
                 "sessionId": sid
             })
 
-        ctx.date = text
+        ctx.date_text = text
+        ctx.date_iso = iso_date
         ctx.state = ChatState.CONFIRMATION
 
         return JSONResponse({
@@ -308,23 +325,28 @@ def chat(m: ChatIn):
                 f"- Nombre: {ctx.name}\n"
                 f"- Teléfono: {ctx.phone}\n"
                 f"- Motivo: {ctx.reason}\n"
-                f"- Fecha: {ctx.date}\n\n"
+                f"- Fecha: {ctx.date_text} ({ctx.date_iso})\n"
+                f"- Hora: {ctx.time_text} ({ctx.time_24h})\n\n"
                 "¿Confirmamos la cita? (**sí / no**)"
             ),
             "sessionId": sid
         })
 
+
     # =========================
     # ASK_TIME_EDIT
     # =========================
     if ctx.state == ChatState.ASK_TIME_EDIT:
-        if not re.match(r"^\d{1,2}(:\d{2})?$", text):
+        t24 = normalize_time(text)
+
+        if not t24:
             return JSONResponse({
                 "reply": "Indícame una hora válida ⏰ (por ejemplo 10 o 10:30)",
                 "sessionId": sid
             })
 
-        ctx.time = text
+        ctx.time_text = text
+        ctx.time_24h = t24
         ctx.state = ChatState.CONFIRMATION
 
         return JSONResponse({
@@ -334,12 +356,13 @@ def chat(m: ChatIn):
                 f"- Nombre: {ctx.name}\n"
                 f"- Teléfono: {ctx.phone}\n"
                 f"- Motivo: {ctx.reason}\n"
-                f"- Fecha: {ctx.date}\n"
-                f"- Hora: {ctx.time}\n\n"
+                f"- Fecha: {ctx.date_text} ({ctx.date_iso})\n"
+                f"- Hora: {ctx.time_text} ({ctx.time_24h})\n\n"
                 "¿Confirmamos la cita? (**sí / no**)"
             ),
             "sessionId": sid
         })
+
 
     # =========================
     # ASK_REASON_EDIT

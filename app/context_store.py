@@ -1,4 +1,4 @@
-from app.models import ChatContext
+from app.context import ChatContext
 
 _CONTEXTS: dict[str, ChatContext] = {}
 

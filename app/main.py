@@ -13,6 +13,8 @@ from app.normalizers.time import normalize_time
 
 from app.database import init_db
 
+from app.database import engine, Base
+
 
 
 app = FastAPI(title="JotaAI Core")
@@ -400,3 +402,16 @@ def chat(m: ChatIn):
         "sessionId": sid
     })
   
+
+  
+from app.repositories.appointments import get_all_appointments
+from app.database import SessionLocal
+
+@app.get("/appointments")
+def list_appointments():
+    db = SessionLocal()
+    try:
+        appointments = get_all_appointments(db)
+        return appointments
+    finally:
+        db.close()

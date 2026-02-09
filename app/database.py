@@ -1,30 +1,25 @@
-import sqlite3
-from pathlib import Path
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-DB_PATH = Path(__file__).parent / "appointments.db"
+DATABASE_URL = "postgresql+psycopg2://postgres:1234@localhost:5432/jotaai"
+
+engine = create_engine(
+    DATABASE_URL,
+    echo=True  # muestra SQL en consola (muy útil ahora)
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
+)
+
+Base = declarative_base()
+
 
 def init_db():
-    print(f"👉 SQLITE DB PATH: {DB_PATH}")
-
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS appointments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            name TEXT,
-            phone TEXT,
-            reason TEXT,
-            date_text TEXT,
-            date_iso TEXT,
-            half_day TEXT,
-            time_text TEXT,
-            time_24h TEXT,
-            status TEXT,
-            created_at TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
+    """
+    Crea las tablas en la base de datos si no existen
+    """
+    from app import models  # 👈 IMPORTANTE (registra los modelos)
+    Base.metadata.create_all(bind=engine)

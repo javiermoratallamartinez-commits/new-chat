@@ -21,3 +21,5 @@ class Appointment(Base):
 
     status = Column(String, default="confirmed")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+

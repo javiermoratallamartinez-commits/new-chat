@@ -15,7 +15,13 @@ from app.database import init_db
 
 from app.database import engine, Base
 
-
+from typing import List
+from app.schemas.appointment import AppointmentResponse
+  
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.repositories.appointments import get_all_appointments
 
 app = FastAPI(title="JotaAI Core")
 
@@ -403,15 +409,6 @@ def chat(m: ChatIn):
     })
   
 
-  
-from app.repositories.appointments import get_all_appointments
-from app.database import SessionLocal
+from app.routers.appointment import router as appointments_router
 
-@app.get("/appointments")
-def list_appointments():
-    db = SessionLocal()
-    try:
-        appointments = get_all_appointments(db)
-        return appointments
-    finally:
-        db.close()
+app.include_router(appointments_router)
